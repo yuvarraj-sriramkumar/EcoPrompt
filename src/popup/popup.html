@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+  <title>EcoPrompt</title>
+</head>
+<body>
+
+  <div id="header">
+    <div id="logo">🌿 EcoPrompt</div>
+    <div id="model-status" class="status-loading">◌ Loading model...</div>
+  </div>
+
+  <!-- Not signed in state -->
+  <div id="auth-banner" class="hidden">
+    <p>Sign in to track your lifetime CO₂ savings</p>
+    <button id="signin-btn">Sign in with Google</button>
+  </div>
+
+  <!-- Signed in state -->
+  <div id="user-bar" class="hidden">
+    <span id="user-email"></span>
+    <button id="signout-btn">Sign out</button>
+  </div>
+
+  <!-- Hero -->
+  <div id="hero">
+    <div id="hero-value"><span id="co2-saved">0.000</span><span id="hero-unit">g CO₂</span></div>
+    <div id="hero-label">saved this session</div>
+  </div>
+
+  <!-- Equivalency cards -->
+  <div id="equiv-cards">
+    <div class="eq-card">
+      <span class="eq-icon">🌳</span>
+      <span class="eq-val" id="tree-days">0.000</span>
+      <span class="eq-label">tree days</span>
+    </div>
+    <div class="eq-card">
+      <span class="eq-icon">🚗</span>
+      <span class="eq-val" id="car-miles">0.0000</span>
+      <span class="eq-label">car miles</span>
+    </div>
+    <div class="eq-card">
+      <span class="eq-icon">📱</span>
+      <span class="eq-val" id="phone-charges">0.00</span>
+      <span class="eq-label">phone charges</span>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div id="tab-bar">
+    <button class="tab active" data-tab="session">Session</button>
+    <button class="tab" data-tab="lifetime">Lifetime</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </div>
+
+  <!-- Session Panel -->
+  <div id="panel-session" class="panel">
+    <div class="stat-row">
+      <span class="stat-label">Tokens Saved</span>
+      <span class="stat-val" id="tokens-saved">0</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Prompts Compressed</span>
+      <span class="stat-val" id="prompts-count">0</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Avg Compression</span>
+      <span class="stat-val" id="avg-compression">0%</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Water Saved</span>
+      <span class="stat-val" id="water-saved">0.00 ml</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Energy Saved</span>
+      <span class="stat-val" id="energy-saved">0.00000 Wh</span>
+    </div>
+  </div>
+
+  <!-- Lifetime Panel -->
+  <div id="panel-lifetime" class="panel hidden">
+    <div id="lifetime-signin-prompt" class="hidden">
+      <p>Sign in to see your lifetime stats</p>
+    </div>
+    <div id="lifetime-stats">
+      <div class="stat-row">
+        <span class="stat-label">Total CO₂ Saved</span>
+        <span class="stat-val" id="lt-co2">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Total Tokens Saved</span>
+        <span class="stat-val" id="lt-tokens">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Prompts Compressed</span>
+        <span class="stat-val" id="lt-prompts">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Panel -->
+  <div id="panel-settings" class="panel hidden">
+    <div class="setting-row">
+      <label>Compression Mode</label>
+      <select id="compression-mode">
+        <option value="aggressive">Aggressive</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="light">Light</option>
+      </select>
+    </div>
+    <div class="setting-row">
+      <label>Auto-accept compressions</label>
+      <input type="checkbox" id="auto-accept">
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

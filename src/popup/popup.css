@@ -1,0 +1,132 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 320px;
+  background: #0d1117;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+
+/* Header */
+#header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #1e2d25;
+}
+#logo { font-size: 15px; font-weight: 700; color: #52b788; }
+.status-ready   { font-size: 11px; color: #52b788; }
+.status-loading { font-size: 11px; color: #f4a261; }
+.status-error   { font-size: 11px; color: #e63946; }
+
+/* Auth */
+#auth-banner {
+  background: #1a1a2e;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #aaa;
+}
+#auth-banner button, #user-bar button {
+  background: #2d6a4f;
+  border: none;
+  color: white;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+}
+#user-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: #1a2e1e;
+  font-size: 11px;
+  color: #52b788;
+}
+
+/* Hero */
+#hero {
+  text-align: center;
+  padding: 24px 16px 16px;
+}
+#hero-value { display: flex; align-items: baseline; justify-content: center; gap: 6px; }
+#co2-saved  { font-size: 40px; font-weight: 800; color: #52b788; line-height: 1; }
+#hero-unit  { font-size: 16px; color: #52b788; }
+#hero-label { font-size: 12px; color: #666; margin-top: 4px; }
+
+/* Equiv cards */
+#equiv-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+.eq-card {
+  background: #1a2e1e;
+  border-radius: 8px;
+  padding: 10px 8px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.eq-icon  { font-size: 18px; }
+.eq-val   { font-size: 13px; font-weight: 700; color: #52b788; }
+.eq-label { font-size: 10px; color: #666; }
+
+/* Tabs */
+#tab-bar {
+  display: flex;
+  border-top: 1px solid #1e2d25;
+  border-bottom: 1px solid #1e2d25;
+}
+.tab {
+  flex: 1;
+  background: none;
+  border: none;
+  color: #666;
+  padding: 10px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: color 0.2s;
+}
+.tab.active { color: #52b788; border-bottom: 2px solid #52b788; }
+.tab:hover  { color: #aaa; }
+
+/* Panels */
+.panel { padding: 12px 16px; }
+.hidden { display: none !important; }
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #1a1a1a;
+}
+.stat-label { color: #888; }
+.stat-val   { font-weight: 600; color: #e0e0e0; }
+
+/* Settings */
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid #1a1a1a;
+}
+.setting-row label { color: #888; }
+select {
+  background: #1a2e1e;
+  border: 1px solid #2d6a4f;
+  color: #e0e0e0;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+input[type="checkbox"] { accent-color: #52b788; }

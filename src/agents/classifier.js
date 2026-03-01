@@ -161,3 +161,55 @@ export function classify(prompt) {
     path: label === "COMPLEX" ? "B" : "A",
   };
 }
+const CLASSIFY_SYSTEM_PROMPT = `You are a prompt classification engine. Classify the given prompt into exactly ONE word.
+
+FACTUAL   — Google-able facts. Math like 2+2, capital cities, who is X, population, price.
+SIMPLE    — Single action, no reasoning. Fix spelling, translate, rename, format, convert.
+MODERATE  — Needs reasoning. Write a function, explain X, SQL query, React component.
+COMPLEX   — Multi-step, architecture, system design, security audit, algorithm from scratch.
+
+Rules:
+1. Reply with ONLY one word: FACTUAL, SIMPLE, MODERATE, or COMPLEX
+2. No explanation. No punctuation. Nothing else.
+3. Math = ALWAYS FACTUAL. Single function = MODERATE not COMPLEX.`;
+
+async function callLLMClassifier(prompt, engine) {
+  try {
+    const response = await engine.chat.completions.create({
+      messages: [
+        { role: "system", content: CLASSIFY_SYSTEM_PROMPT },
+        { role: "user",   content: `Classify into one word only:\n${prompt}` },
+      ],
+      temperature: 0.0,
+      max_tokens:  5,
+    });
+    const raw   = response.choices[0]?.message?.content?.trim().toUpperCase();
+    const valid = ["FACTUAL", "SIMPLE", "MODERATE", "COMPLEX"];
+    const found = valid.find(v => raw.includes(v));
+    console.log(`[EcoPrompt] LLM classified: ${found ?? "null"} (raw: "${raw}")`);
+    return found ?? null;
+  } catch (err) {
+    console.warn("[EcoPrompt] LLM classify failed:", err.message);
+    return null;
+  }
+}
+
+export async function classifyWithLLM(prompt, engine) {
+  const t         = prompt.toLowerCase().trim();
+  const words     = prompt.trim().split(/\s+/);
+  const wordCount = words.length;
+
+  if (FACTUAL_PATTERNS.some(p => p.test(t))) {
+    console.log("[EcoPrompt] FACTUAL via rules");
+    return { label: "FACTUAL", confidence: computeConfidence("FACTUAL", 0, t), wordCount, score: 0, path: "C", method: "rules" };
+  }
+
+  if (!engine) return { ...classify(prompt), method: "rules" };
+
+  const llmLabel = await callLLMClassifier(prompt, engine);
+  if (!llmLabel) return { ...classify(prompt), method: "rules-fallback" };
+
+  const score = complexityScore(prompt);
+  const path  = llmLabel === "COMPLEX" ? "B" : llmLabel === "FACTUAL" ? "C" : "A";
+  return { label: llmLabel, confidence: 0.93, wordCount, score, path, method: "llm" };
+}

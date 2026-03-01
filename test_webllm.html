@@ -1,411 +1,27 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebLLM Compression Test</title>
+  <title>EcoPrompt Tester</title>
   <script type="module">
+
     import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+    const v = Date.now();
 
-    // ── Classifier ────────────────────────────────────────────────────────────
+    const { classify, classifyWithLLM } = await import(`./src/agents/classifier.js?v=${v}`);
+    const { route }              = await import(`./src/agents/router.js?v=${v}`);
+    const { compressWithEngine } = await import(`./src/agents/compressor.js?v=${v}`);
+    const { estimateTokens }     = await import(`./src/utils/tokenizer.js?v=${v}`);
+    const { preprocessWithLLM }  = await import(`./src/utils/preprocessor.js?v=${v}`);
+    const { buildStats }         = await import(`./src/utils/carbon.js?v=${v}`);
+    // // ── All logic from real .js files — ZERO logic written here ──────────────
+    // const { classify }           = await import("./src/agents/classifier.js");
+    // const { route }              = await import("./src/agents/router.js");
+    // const { compressWithEngine } = await import("./src/agents/compressor.js");
+    // const { estimateTokens }     = await import("./src/utils/tokenizer.js");
+    // const { preprocessWithLLM }  = await import("./src/utils/preprocessor.js");
+    // const { buildStats }         = await import("./src/utils/carbon.js");
 
-    const FACTUAL_PATTERNS = [
-      /^(what is|what are|what was|what were)\s/,
-      /^(who is|who was|who are|who were)\s/,
-      /^(when is|when was|when did|when does)\s/,
-      /^(where is|where are|where was)\s/,
-      /^(how many|how much|how tall|how old|how far|how long)\s/,
-      /\b(capital of|population of|founded in|born in|located in)\b/,
-      /\b(convert \d|how many \w+ in \w+)\b/,
-      /\b(current price|stock price|exchange rate|weather in)\b/,
-      /^(define|definition of|meaning of|what does \w+ mean)\b/,
-      /^(when was .+ (born|founded|invented|created|built))/,
-    ];
-
-    const COMPLEX_PATTERNS = [
-      /\b(architect|design system|system design|high.level|scalab)\b/,
-      /\b(refactor|rewrite|restructure|optimize|improve performance)\b/,
-      /\b(analyze|analyse|compare|evaluate|assess|audit|review)\b/,
-      /\b(pros and cons|trade.?off|versus|vs\.?|difference between)\b/,
-      /\b(step by step|step-by-step|comprehensiv|in.depth|thoroughly|detailed)\b/,
-      /\b(multiple|several|various|all of the|list of|each of)\b/,
-      /\b(debug|troubleshoot|diagnose|root cause|why (is|does|did|isn't|doesn't))\b/,
-      /\b(write a (complete|full|detailed|comprehensive)|generate a (complete|full))\b/,
-      /\b(algorithm|data structure|design pattern|microservice|distributed)\b/,
-      /\b(implement.+(from scratch|without|using only))\b/,
-    ];
-
-    const CODE_PATTERNS = [
-      /\b(function|class|component|api|endpoint|query|script|module)\b/,
-      /\b(python|javascript|typescript|react|sql|java|golang|rust|swift)\b/,
-      /\b(bug|error|exception|fix|debug|issue|problem with my)\b/,
-      /\b(write|create|build|implement|develop|code)\b.{0,30}\b(in|using|with)\b/,
-    ];
-
-    const SIMPLE_PATTERNS = [
-      /^(fix|correct|update|change|rename|add|remove|delete)\s/i,
-      /^(translate|convert|format|summarize|list)\s/i,
-      /^(what('s| is) the (syntax|command|shortcut|hotkey))/i,
-    ];
-
-    function complexityScore(text) {
-      const t         = text.toLowerCase().trim();
-      const words     = text.trim().split(/\s+/);
-      const wordCount = words.length;
-      let score       = 0;
-
-      if (wordCount <= 8)  score += 10;
-      if (wordCount <= 20) score += 10;
-      if (wordCount > 20)  score += 20;
-      if (wordCount > 40)  score += 15;
-      if (wordCount > 60)  score += 10;
-
-      const complexHits = COMPLEX_PATTERNS.filter(p => p.test(t)).length;
-      score += complexHits * 20;
-
-      const codeHits = CODE_PATTERNS.filter(p => p.test(t)).length;
-      score += codeHits * 10;
-
-      const simpleHits = SIMPLE_PATTERNS.filter(p => p.test(t)).length;
-      score -= simpleHits * 15;
-
-      const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0).length;
-      if (sentences > 2) score += 10;
-      if (sentences > 4) score += 10;
-
-      if (/^(what|who|when|where|which)\b/i.test(t)) score -= 5;
-
-      return Math.max(0, Math.min(100, score));
-    }
-
-    function computeConfidence(label, score, text) {
-      const t = text.toLowerCase();
-      if (label === "FACTUAL") {
-        const hits = FACTUAL_PATTERNS.filter(p => p.test(t)).length;
-        return Math.min(0.99, 0.85 + hits * 0.05);
-      }
-      if (label === "COMPLEX") {
-        const hits = COMPLEX_PATTERNS.filter(p => p.test(t)).length;
-        return Math.min(0.99, 0.70 + hits * 0.08);
-      }
-      if (label === "SIMPLE") return score < 20 ? 0.90 : 0.70;
-      return 0.65;
-    }
-
-    function classify(prompt) {
-      const t         = prompt.toLowerCase().trim();
-      const words     = prompt.trim().split(/\s+/);
-      const wordCount = words.length;
-
-      if (FACTUAL_PATTERNS.some(p => p.test(t))) {
-        return {
-          label:      "FACTUAL",
-          confidence: computeConfidence("FACTUAL", 0, t),
-          wordCount,
-          score:      0,
-          path:       "C",
-        };
-      }
-
-      const score = complexityScore(prompt);
-      let label;
-      if (score < 25)      label = "SIMPLE";
-      else if (score < 55) label = "MODERATE";
-      else                 label = "COMPLEX";
-
-      return {
-        label,
-        confidence: computeConfidence(label, score, t),
-        wordCount,
-        score,
-        path: label === "COMPLEX" ? "B" : "A",
-      };
-    }
-
-    // ── Router ────────────────────────────────────────────────────────────────
-
-    const MODEL_RECOMMENDATIONS = {
-      SIMPLE: {
-        recommended:  "GPT-3.5-turbo",
-        alternatives: ["Gemini 1.5 Flash", "Claude Haiku", "Llama 3 8B"],
-        reason:       "Simple prompt — frontier model is overkill",
-        costSaving:   "~10x cheaper than GPT-4o",
-        co2Saving:    "~8x less CO₂ than GPT-4o",
-        badge:        "💚 Low Energy",
-      },
-      MODERATE: {
-        recommended:  "GPT-4o-mini",
-        alternatives: ["Gemini 1.5 Flash", "Claude Haiku", "Mistral 7B"],
-        reason:       "Mid-complexity — efficient model handles this well",
-        costSaving:   "~5x cheaper than GPT-4o",
-        co2Saving:    "~4x less CO₂ than GPT-4o",
-        badge:        "💛 Medium Energy",
-      },
-      COMPLEX: {
-        recommended:  "Claude Sonnet",
-        alternatives: ["GPT-4o", "Gemini 1.5 Pro", "Claude Opus"],
-        reason:       "Complex reasoning required — use capable model",
-        costSaving:   "Compression still saves ~30% token cost",
-        co2Saving:    "Compressed tokens = less compute even on large model",
-        badge:        "🔴 High Complexity — Compressed",
-      },
-      FACTUAL: {
-        recommended:  "Web Search",
-        alternatives: ["Perplexity AI", "Google Search", "DuckDuckGo"],
-        reason:       "Factual query — web search is faster, fresher, and free",
-        costSaving:   "100% AI cost eliminated",
-        co2Saving:    "100% AI energy saved",
-        badge:        "🌱 Zero AI Energy",
-      },
-    };
-
-    function route(classification) {
-      const { label, confidence } = classification;
-
-      if (label === "FACTUAL") {
-        return {
-          path:            "C",
-          action:          "SKIP_AI",
-          shouldCompress:  false,
-          modelSuggestion: MODEL_RECOMMENDATIONS.FACTUAL,
-          reason:          "Factual query — web search is faster and free",
-          confidence,
-          label,
-        };
-      }
-
-      if (label === "COMPLEX") {
-        return {
-          path:            "B",
-          action:          "MODEL_SWITCH",
-          shouldCompress:  true,
-          modelSuggestion: MODEL_RECOMMENDATIONS.COMPLEX,
-          reason:          "Complex task — compressing + recommending capable model",
-          confidence,
-          label,
-        };
-      }
-
-      if (label === "SIMPLE" || label === "MODERATE") {
-        return {
-          path:            "A",
-          action:          "COMPRESS",
-          shouldCompress:  true,
-          modelSuggestion: MODEL_RECOMMENDATIONS[label],
-          reason:          `${label} task — compress + switch to efficient model`,
-          confidence,
-          label,
-        };
-      }
-
-      return {
-        path:            "A",
-        action:          "COMPRESS",
-        shouldCompress:  true,
-        modelSuggestion: MODEL_RECOMMENDATIONS.MODERATE,
-        reason:          "Unknown classification — defaulting to compress",
-        confidence:      0.5,
-        label:           "MODERATE",
-      };
-    }
-
-    // ── Token estimator ───────────────────────────────────────────────────────
-
-    function estimateTokens(text) {
-      return Math.ceil(text.trim().length / 4);
-    }
-
-    function isShorter(compressed, original) {
-      return estimateTokens(compressed) < estimateTokens(original);
-    }
-
-    function pickShorter(a, b) {
-      return estimateTokens(a) <= estimateTokens(b) ? a : b;
-    }
-
-    // ── Technical term checker ────────────────────────────────────────────────
-
-    function extractTechnicalTerms(text) {
-      return text
-        .split(/\s+/)
-        .map(w => w.replace(/[^a-zA-Z0-9]/g, "").toLowerCase())
-        .filter(w => w.length > 5);
-    }
-
-    function preservesTechnicalTerms(original, compressed) {
-      const terms = extractTechnicalTerms(original);
-      if (terms.length === 0) return true;
-      const compLower = compressed.toLowerCase();
-      const lost = terms.filter(t => !compLower.includes(t));
-      return lost.length / terms.length < 0.2;
-    }
-
-    // ── Answer detector ───────────────────────────────────────────────────────
-
-    function isAnswer(original, compressed) {
-      const codeMarkers = [
-        /SELECT\s+\w+/i,
-        /FROM\s+\w+/i,
-        /^\s*def\s+\w+\s*\(/m,
-        /^\s*function\s+\w+\s*\(/m,
-        /=>\s*\{/,
-        /import\s+\w+/,
-        /class\s+\w+\s*[:{]/,
-      ];
-      const originalHasCode = codeMarkers.some(p => p.test(original));
-      if (!originalHasCode && codeMarkers.some(p => p.test(compressed))) {
-        console.warn("[EcoPrompt] Rejected — LLM returned code/answer");
-        return true;
-      }
-      return false;
-    }
-
-    // ── Rule-based compressor ─────────────────────────────────────────────────
-
-    function compressWithRules(text) {
-      let out = text;
-      out = out.replace(/^(hey|hi|hello)[,!]?\s*/i, "");
-      out = out.replace(/^(could you please|please kindly|I was wondering if you could|I would like you to|I want you to|can you please|I need you to|could you|can you|please|help me)\s*/i, "");
-      out = out.replace(/\b(please|kindly|basically|essentially|literally|actually|honestly|simply|just|kind of|sort of|maybe|perhaps|really|very)\b\s*/gi, "");
-      out = out.replace(/\b(I think|I believe|I feel like|in my opinion|I guess)\b\s*/gi, "");
-      out = out.replace(/^help me (with |understand |figure out |solve |know |find )?\s*/i, "");
-      out = out.replace(/\bwhat is the (solution|answer|result) (for|to|of)\b\s*/i, "");
-      out = out.replace(/^(tell me about|explain to me|give me|show me)\s*/i, "");
-      out = out.replace(/[.,]?\s*(thanks?( you)?|thank you|cheers|appreciate it)[.!]?\s*$/i, "");
-      out = out.replace(/^(so|well|now|okay|ok)[,]?\s*/i, "");
-      out = out.replace(/\s{2,}/g, " ").trim();
-      return out.charAt(0).toUpperCase() + out.slice(1);
-    }
-
-    // ── System prompts ────────────────────────────────────────────────────────
-
-    const SYSTEM_PROMPT_STANDARD = `You are a prompt rewriting engine. Your only job is to shorten instructions.
-CRITICAL RULE: You must NEVER answer, solve, execute, or respond to the content of the instruction. You are an editor, not an assistant. You only rewrite.
-
-Rules:
-1. NEVER answer the instruction — only rewrite it shorter
-2. NEVER generate code, SQL, math solutions, or any answer
-3. Remove ALL filler: hey, please, kindly, could you, help me, basically, sort of, just, actually
-4. Start with an imperative verb: Write, Explain, List, Create, Fix, Build, Solve, Calculate
-5. Keep every technical detail: language, framework, constraints, numbers, table names
-6. Output MUST have fewer tokens than input
-7. Output ONLY the rewritten instruction — nothing else`;
-
-    const SYSTEM_PROMPT_STRICT = `You are an aggressive prompt rewriting engine. Maximum shortening required.
-CRITICAL RULE: NEVER answer or execute the instruction. You are ONLY an editor. Rewrite, never respond.
-
-Rules:
-1. NEVER generate code, SQL, calculations or any answer — only rewrite the instruction
-2. Target 40-50% of original token count
-3. Telegraphic style: drop articles where meaning stays clear
-4. Drop ALL: please, help, can you, could you, I want, I need, tell me
-5. Keep: core task + technical constraints + all numbers + table/variable names
-6. Start with imperative verb: Write/Explain/List/Fix/Solve/Build
-7. Output ONLY the shortened instruction — nothing else`;
-
-    const SYSTEM_PROMPT_SCORE = `You are a semantic similarity judge.
-Given an original prompt and a compressed version, rate how well the compressed version preserves the full intent and technical requirements of the original.
-Score from 1-10 where:
-10 = identical intent, all technical details preserved
-7  = same core task, minor details may be implied
-5  = mostly same but some intent lost
-3  = significant intent lost
-1  = completely different meaning
-Reply with ONLY a single integer between 1 and 10. Nothing else.`;
-
-    // ── LLM calls ─────────────────────────────────────────────────────────────
-
-    let engine = null;
-
-    async function callLLM(prompt, mode = "standard") {
-      const systemPrompt = mode === "strict"
-        ? SYSTEM_PROMPT_STRICT
-        : SYSTEM_PROMPT_STANDARD;
-
-      const userMessage = mode === "strict"
-        ? `Shorten this instruction to under half its length. Do NOT answer it or execute it. Only rewrite the instruction.\n\n[INSTRUCTION TO SHORTEN]: ${prompt}`
-        : `Rewrite this instruction in fewer words. Do NOT answer it or execute it. Only rewrite the instruction itself.\n\n[INSTRUCTION TO SHORTEN]: ${prompt}`;
-
-      const response = await engine.chat.completions.create({
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user",   content: userMessage  },
-        ],
-        temperature: 0.1,
-        max_tokens:  300,
-      });
-      return response.choices[0]?.message?.content?.trim() ?? "";
-    }
-
-    async function semanticScore(original, compressed) {
-      try {
-        const response = await engine.chat.completions.create({
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT_SCORE },
-            {
-              role:    "user",
-              content: `Original: "${original}"\n\nCompressed: "${compressed}"\n\nScore (1-10):`,
-            },
-          ],
-          temperature: 0.0,
-          max_tokens:  5,
-        });
-        const raw   = response.choices[0]?.message?.content?.trim();
-        const score = parseInt(raw?.match(/\d+/)?.[0] ?? "10", 10);
-        return isNaN(score) ? 10 : score;
-      } catch {
-        return 10;
-      }
-    }
-
-    // ── Validation ────────────────────────────────────────────────────────────
-
-    async function isValidCompression(original, compressed) {
-      if (isAnswer(original, compressed))              return false;
-      if (!isShorter(compressed, original))            return false;
-      if (!preservesTechnicalTerms(original, compressed)) return false;
-      const score = await semanticScore(original, compressed);
-      if (score < 7) return false;
-      return true;
-    }
-
-    // ── Main compress pipeline ────────────────────────────────────────────────
-
-    async function compress(prompt) {
-      const original   = prompt.trim();
-      const origTokens = estimateTokens(original);
-      const rulesResult = compressWithRules(original);
-
-      try {
-        // Pass 1 — standard
-        const llmStandard = await callLLM(original, "standard");
-        if (await isValidCompression(original, llmStandard)) {
-          const best = pickShorter(llmStandard, rulesResult);
-          return { compressed: best, method: "webllm", origTokens };
-        }
-
-        // Pass 2 — strict
-        console.warn("[EcoPrompt] Standard failed — trying strict...");
-        const llmStrict = await callLLM(original, "strict");
-        if (await isValidCompression(original, llmStrict)) {
-          const best = pickShorter(llmStrict, rulesResult);
-          return { compressed: best, method: "webllm-strict", origTokens };
-        }
-
-        console.warn("[EcoPrompt] Both LLM passes failed — using rules...");
-      } catch (err) {
-        console.warn("[EcoPrompt] WebLLM error:", err.message);
-      }
-
-      // Rules fallback
-      if (isShorter(rulesResult, original)) {
-        return { compressed: rulesResult, method: "rules", origTokens };
-      }
-
-      // Passthrough
-      return { compressed: original, method: "passthrough", origTokens };
-    }
-
-    // ── Badge color ───────────────────────────────────────────────────────────
-
+    // ── Display helper only — zero business logic ─────────────────────────────
     function badgeColor(label) {
       return {
         FACTUAL:  "#00FFB2",
@@ -415,71 +31,155 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
       }[label] ?? "#94A3B8";
     }
 
-    // ── UI ────────────────────────────────────────────────────────────────────
+    // ── UI elements ───────────────────────────────────────────────────────────
+    const OUTPUT      = document.getElementById("output");
+    const BTN         = document.getElementById("btn");
+    const INPUT       = document.getElementById("input");
+    const LOADER      = document.getElementById("loader");
+    const PROG_BAR    = document.getElementById("prog-bar");
+    const PROG_PCT    = document.getElementById("prog-pct");
+    const PROG_TEXT   = document.getElementById("prog-text");
+    const PROG_PHASE  = document.getElementById("prog-phase");
+    const PROG_STEPS  = document.getElementById("prog-steps");
+    const MODEL_READY = document.getElementById("model-ready");
+    const PROC_STATUS = document.getElementById("proc-status");
 
-    const STATUS = document.getElementById("status");
-    const OUTPUT = document.getElementById("output");
-    const BTN    = document.getElementById("btn");
-    const INPUT  = document.getElementById("input");
+    let engine = null;
 
+    // ── Step logger ───────────────────────────────────────────────────────────
+    function logStep(text, status = "done") {
+      const icon = { done: "✅", active: "⚙️", waiting: "⏳", error: "❌" }[status] ?? "⏳";
+      const div  = document.createElement("div");
+      div.className = "step-item";
+      div.innerHTML = `<span class="step-icon">${icon}</span><span>${text}</span>`;
+      PROG_STEPS.appendChild(div);
+      PROG_STEPS.scrollTop = PROG_STEPS.scrollHeight;
+    }
+
+    function clearSteps() { PROG_STEPS.innerHTML = ""; }
+
+    // ── Load model ────────────────────────────────────────────────────────────
     async function loadModel() {
-      STATUS.textContent = "⏳ Loading Phi-3 mini... first time takes 2–4 mins";
+      LOADER.style.display      = "block";
+      MODEL_READY.style.display = "none";
+      BTN.disabled = true;
+
+      clearSteps();
+      logStep("Initializing WebLLM engine...", "active");
+      logStep("Checking WebGPU support...", "waiting");
+      logStep("Fetching Phi-3-mini weights (~2GB)...", "waiting");
+      logStep("Loading model into GPU memory...", "waiting");
+      logStep("Warming up inference engine...", "waiting");
+
       try {
         engine = await webllm.CreateMLCEngine(
           "Phi-3-mini-4k-instruct-q4f16_1-MLC",
           {
             initProgressCallback: (p) => {
-              STATUS.textContent = `⏳ Loading: ${Math.round(p.progress * 100)}% — ${p.text}`;
+              const pct  = Math.round(p.progress * 100);
+              const text = p.text ?? "";
+
+              PROG_BAR.style.width  = `${pct}%`;
+              PROG_PCT.textContent  = `${pct}%`;
+              PROG_TEXT.textContent = text;
+
+              if (pct < 10)      PROG_PHASE.textContent = "🔍 Checking WebGPU...";
+              else if (pct < 50) PROG_PHASE.textContent = "📥 Downloading weights...";
+              else if (pct < 80) PROG_PHASE.textContent = "💾 Loading into memory...";
+              else if (pct < 95) PROG_PHASE.textContent = "⚡ Compiling shaders...";
+              else               PROG_PHASE.textContent = "🔥 Warming up engine...";
+
+              if (pct === 10)  { clearSteps(); logStep("WebGPU detected ✓", "done"); logStep("Downloading model weights...", "active"); }
+              if (pct === 50)  { logStep("50% — weights downloaded", "done"); logStep("Loading into GPU memory...", "active"); }
+              if (pct === 80)  { logStep("Model loaded into memory ✓", "done"); logStep("Compiling WebGPU shaders...", "active"); }
+              if (pct === 95)  { logStep("Shaders compiled ✓", "done"); logStep("Warming up engine...", "active"); }
+              if (pct === 100) { logStep("Engine ready ✓", "done"); }
             },
           }
         );
-        STATUS.textContent = "✅ Model ready — paste a prompt and compress";
-        BTN.disabled = false;
+
+        LOADER.style.display      = "none";
+        MODEL_READY.style.display = "flex";
+        BTN.disabled    = false;
+        BTN.textContent = "▶ Compress Prompt";
+        clearSteps();
+        logStep("Phi-3-mini fully loaded ✓", "done");
+        logStep("WebGPU inference active ✓", "done");
+        logStep("Ready to compress prompts ✓", "done");
+
       } catch (e) {
-        STATUS.textContent = "❌ WebGPU error: " + e.message;
+        PROG_PHASE.textContent    = "❌ Failed";
+        PROG_TEXT.textContent     = e.message;
+        PROG_BAR.style.background = "#FF4444";
+        clearSteps();
+        logStep("WebGPU error: " + e.message, "error");
+        logStep("Fix: chrome://flags → enable WebGPU", "error");
+        logStep("Fix: close other tabs to free RAM", "error");
       }
     }
 
+    // ── Button click — orchestration only, all logic from .js files ──────────
     BTN.addEventListener("click", async () => {
-      const prompt = INPUT.value.trim();
-      if (!prompt) { STATUS.textContent = "❌ Enter a prompt first"; return; }
-      if (!engine)  { STATUS.textContent = "❌ Model not loaded yet"; return; }
+      const rawPrompt = INPUT.value.trim();
+      if (!rawPrompt) { PROC_STATUS.textContent = "❌ Enter a prompt first"; return; }
+      if (!engine)    { PROC_STATUS.textContent = "❌ Model not loaded yet";  return; }
 
-      BTN.disabled    = true;
+      BTN.disabled     = true;
       OUTPUT.innerHTML = "";
-      STATUS.textContent = "⚙️ Classifying + compressing...";
 
-      // Step 1 — classify and route (instant)
-      const classification = classify(prompt);
-      const routeResult    = route(classification);
-      const color          = badgeColor(classification.label);
+      // Step 1 — preprocessor.js
+      PROC_STATUS.textContent = "🧹 Step 1/4 — Preprocessing...";
+      const { cleaned, method: prepMethod, wasModified } =
+        await preprocessWithLLM(rawPrompt, engine);
 
-      // Step 2 — compress if route says so
+      // Step 2 — classifier.js
+      PROC_STATUS.textContent = "🏷️ Step 2/4 — Classifying...";
+      const classification = await classifyWithLLM(cleaned, engine);
+
+      // Step 3 — router.js
+      PROC_STATUS.textContent = "🔀 Step 3/4 — Routing...";
+      const routeResult = route(classification);
+      const color       = badgeColor(classification.label);
+
+      // Step 4 — compressor.js
+      // Pass classification.label so FACTUAL/SIMPLE skip LLM automatically
+      PROC_STATUS.textContent = "⚙️ Step 4/4 — Compressing...";
       const start = Date.now();
-      let compressed, method, origTokens, compTokens, saved, latency;
+      let compressed, method, origTokens, compTokens, saved, latency, carbonData;
 
       if (routeResult.shouldCompress) {
-        const result = await compress(prompt);
+        const result = await compressWithEngine(cleaned, engine, classification.label);
         compressed   = result.compressed;
         method       = result.method;
-        origTokens   = result.origTokens;
-        compTokens   = estimateTokens(compressed);
-        saved        = Math.max(0, Math.round((1 - compTokens / origTokens) * 100));
+        origTokens   = result.originalTokens;
+        compTokens   = result.compressedTokens;
+        saved        = result.savingPercent;
         latency      = ((Date.now() - start) / 1000).toFixed(1);
+        carbonData   = buildStats(cleaned, compressed, routeResult.modelSuggestion.to);
       } else {
-        // PATH C — no compression
-        compressed = prompt;
+        // PATH C — FACTUAL, skip AI entirely
+        compressed = cleaned;
         method     = "skip-ai";
-        origTokens = estimateTokens(prompt);
+        origTokens = estimateTokens(rawPrompt);
         compTokens = origTokens;
-        saved      = 100; // 100% AI skipped
+        saved      = 100;
         latency    = ((Date.now() - start) / 1000).toFixed(1);
+        carbonData = buildStats(rawPrompt, rawPrompt, "default");
       }
 
+      // ── Render output ─────────────────────────────────────────────────────
       OUTPUT.innerHTML = `
 
-        <!-- Classification -->
-        <div class="card" style="border-left: 4px solid ${color}">
+        ${wasModified ? `
+        <div class="card" style="border-left:4px solid #FFB347">
+          <div class="label" style="color:#FFB347">🧹 Preprocessed · ${prepMethod}</div>
+          <div class="text" style="margin-top:6px">
+            <span style="color:#64748B">Raw &nbsp;&nbsp;&nbsp;→ </span>${rawPrompt}<br/>
+            <span style="color:#FFB347">Cleaned → </span>${cleaned}
+          </div>
+        </div>` : ""}
+
+        <div class="card" style="border-left:4px solid ${color}">
           <div class="label" style="color:${color}">
             🏷️ ${classification.label}
             &nbsp;·&nbsp; ${Math.round(classification.confidence * 100)}% confidence
@@ -489,42 +189,73 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
           <div class="text" style="margin-top:6px">${routeResult.reason}</div>
         </div>
 
-        <!-- Model recommendation -->
-        <div class="card" style="border-left: 4px solid #38BDF8">
+        <div class="card" style="border-left:4px solid #38BDF8">
           <div class="label" style="color:#38BDF8">🤖 Model Recommendation · PATH ${routeResult.path}</div>
           <div class="text" style="margin-top:8px; display:flex; flex-direction:column; gap:6px">
             <div><span style="color:#94A3B8">Recommended → </span><strong style="color:#00FFB2">${routeResult.modelSuggestion.recommended}</strong></div>
             <div><span style="color:#94A3B8">Alternatives → </span><span style="color:#64748B">${routeResult.modelSuggestion.alternatives.join(", ")}</span></div>
-            <div><span style="color:#94A3B8">Why → </span><span style="color:#64748B">${routeResult.modelSuggestion.reason}</span></div>
-            <div><span style="color:#94A3B8">Cost → </span><span style="color:#64748B">${routeResult.modelSuggestion.costSaving}</span></div>
-            <div><span style="color:#94A3B8">CO₂ → </span><span style="color:#64748B">${routeResult.modelSuggestion.co2Saving}</span></div>
+            <div><span style="color:#94A3B8">Why &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ </span><span style="color:#64748B">${routeResult.modelSuggestion.reason}</span></div>
+            <div><span style="color:#94A3B8">Cost &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ </span><span style="color:#64748B">${routeResult.modelSuggestion.costSaving}</span></div>
+            <div><span style="color:#94A3B8">CO₂ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ </span><span style="color:#64748B">${routeResult.modelSuggestion.co2Saving}</span></div>
           </div>
         </div>
 
-        <!-- Original -->
         <div class="card">
           <div class="label" style="color:#FF6B6B">📝 Original — ~${origTokens} tokens</div>
-          <div class="text">${prompt}</div>
+          <div class="text">${rawPrompt}</div>
         </div>
 
         <div class="arrow">↓ ${method} · ${latency}s · PATH ${routeResult.path}</div>
 
-        <!-- Compressed -->
         <div class="card" style="border-color:${saved > 0 ? "#00FFB2" : "#64748B"}">
           <div class="label" style="color:${saved > 0 ? "#00FFB2" : "#64748B"}">
-            ${saved > 0 ? "✅" : "⚠️"} ${routeResult.path === "C" ? "Skipped AI — use web search" : `Compressed — ~${compTokens} tokens (${saved}% saved)`}
+            ${saved > 0 ? "✅" : "⚠️"} ${routeResult.path === "C"
+              ? "Skipped AI — use web search instead"
+              : `Compressed — ~${compTokens} tokens (${saved}% saved)`}
           </div>
-          <div class="text">${routeResult.path === "C" ? "No compression needed — web search recommended instead of AI" : compressed}</div>
+          <div class="text">${routeResult.path === "C"
+            ? `No AI needed — search the web for: <strong style="color:#00FFB2">${cleaned}</strong>`
+            : compressed}
+          </div>
         </div>
 
-        <!-- Stats -->
+        <div class="card" style="border-left:4px solid #00FFB2">
+          <div class="label" style="color:#00FFB2">🌍 Carbon & Energy Impact</div>
+          <div class="carbon-grid" style="margin-top:10px">
+            <div class="carbon-stat">
+              <div class="carbon-val" style="color:#00FFB2">${carbonData.co2Grams}g</div>
+              <div class="carbon-key">CO₂ Saved</div>
+            </div>
+            <div class="carbon-stat">
+              <div class="carbon-val" style="color:#38BDF8">${carbonData.waterMl}ml</div>
+              <div class="carbon-key">Water Saved</div>
+            </div>
+            <div class="carbon-stat">
+              <div class="carbon-val" style="color:#A78BFA">${carbonData.whSaved}Wh</div>
+              <div class="carbon-key">Energy Saved</div>
+            </div>
+            <div class="carbon-stat">
+              <div class="carbon-val" style="color:#FB923C">${carbonData.equiv.treeDays}</div>
+              <div class="carbon-key">Tree Days</div>
+            </div>
+            <div class="carbon-stat">
+              <div class="carbon-val" style="color:#F472B6">${carbonData.equiv.smartphoneCharges}</div>
+              <div class="carbon-key">Phone Charges</div>
+            </div>
+            <div class="carbon-stat">
+              <div class="carbon-val" style="color:#FFB347">${carbonData.efficiencyScore}/100</div>
+              <div class="carbon-key">Eco Score</div>
+            </div>
+          </div>
+        </div>
+
         <div class="stats">
           <div class="stat">
             <div class="stat-val" style="color:#00FFB2">${saved}%</div>
             <div class="stat-key">${routeResult.path === "C" ? "AI Skipped" : "Tokens Saved"}</div>
           </div>
           <div class="stat">
-            <div class="stat-val" style="color:#38BDF8">${routeResult.path === "C" ? origTokens : Math.max(0, origTokens - compTokens)}</div>
+            <div class="stat-val" style="color:#38BDF8">${Math.max(0, origTokens - compTokens)}</div>
             <div class="stat-key">Tokens Freed</div>
           </div>
           <div class="stat">
@@ -538,7 +269,7 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
         </div>
       `;
 
-      STATUS.textContent = "✅ Done — enter another prompt to test again";
+      PROC_STATUS.textContent = "✅ Done — enter another prompt to test again";
       BTN.disabled = false;
     });
 
@@ -547,23 +278,27 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
       background: #030712;
       color: #E2E8F0;
       font-family: 'Courier New', monospace;
       padding: 32px 24px;
-      max-width: 760px;
+      max-width: 780px;
       margin: 0 auto;
     }
+
     h1 {
       font-size: 26px;
       font-weight: 900;
       background: linear-gradient(90deg, #00FFB2, #38BDF8, #A78BFA);
-      background-clip: text;
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      background-clip: text;
+      color: transparent;
       margin-bottom: 6px;
     }
+
     .sub {
       color: #475569;
       font-size: 11px;
@@ -571,6 +306,130 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
       margin-bottom: 28px;
       text-transform: uppercase;
     }
+
+    /* ── Loader ──────────────────────────────────────────────────────────────── */
+    #loader {
+      background: #0F172A;
+      border: 1px solid #1E293B;
+      border-radius: 14px;
+      padding: 28px;
+      margin-bottom: 24px;
+      display: none;
+    }
+
+    .loader-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .loader-icon {
+      width: 40px; height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #00FFB2, #38BDF8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.7; transform: scale(0.95); }
+    }
+
+    .loader-title { font-size: 14px; font-weight: 700; color: #E2E8F0; }
+    .loader-sub   { font-size: 11px; color: #475569; margin-top: 2px; }
+
+    .prog-track {
+      background: #1E293B;
+      border-radius: 999px;
+      height: 8px;
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+
+    #prog-bar {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #00FFB2, #38BDF8, #A78BFA);
+      transition: width 0.4s ease;
+      position: relative;
+    }
+
+    #prog-bar::after {
+      content: '';
+      position: absolute;
+      top: 0; right: 0;
+      width: 40px; height: 100%;
+      background: rgba(255,255,255,0.3);
+      border-radius: 999px;
+      animation: shimmer 1.5s infinite;
+    }
+
+    @keyframes shimmer {
+      0%   { opacity: 0; transform: translateX(-20px); }
+      50%  { opacity: 1; }
+      100% { opacity: 0; transform: translateX(20px); }
+    }
+
+    .prog-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    #prog-phase { font-size: 12px; color: #38BDF8; font-weight: 700; }
+    #prog-pct   { font-size: 20px; font-weight: 900; color: #00FFB2; }
+    #prog-text  { font-size: 10px; color: #475569; margin-bottom: 16px; min-height: 14px; }
+
+    #prog-steps {
+      background: #020817;
+      border: 1px solid #1E293B;
+      border-radius: 8px;
+      padding: 10px 12px;
+      max-height: 120px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .step-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: #64748B;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .step-icon { font-size: 12px; flex-shrink: 0; }
+
+    #model-ready {
+      background: #022c22;
+      border: 1px solid #00FFB2;
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 20px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: #00FFB2;
+      font-weight: 700;
+    }
+
     textarea {
       width: 100%;
       background: #0F172A;
@@ -586,7 +445,9 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
       outline: none;
       transition: border-color 0.2s;
     }
+
     textarea:focus { border-color: #00FFB2; }
+
     button {
       background: #00FFB2;
       color: #030712;
@@ -597,28 +458,30 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
       font-size: 13px;
       font-weight: 700;
       cursor: pointer;
-      margin-bottom: 20px;
+      margin-bottom: 12px;
       letter-spacing: 1px;
       transition: opacity 0.2s;
     }
-    button:disabled {
-      background: #1E293B;
-      color: #475569;
-      cursor: not-allowed;
-    }
-    #status {
+
+    button:disabled { background: #1E293B; color: #475569; cursor: not-allowed; }
+
+    #proc-status {
       color: #FFB347;
       font-size: 12px;
       margin-bottom: 24px;
       min-height: 18px;
+      letter-spacing: 0.5px;
     }
+
     .card {
       background: #0F172A;
       border: 1px solid #1E293B;
       border-radius: 10px;
       padding: 16px 18px;
       margin-bottom: 10px;
+      animation: fadeIn 0.3s ease;
     }
+
     .label {
       font-size: 11px;
       font-weight: 700;
@@ -626,59 +489,86 @@ Reply with ONLY a single integer between 1 and 10. Nothing else.`;
       text-transform: uppercase;
       margin-bottom: 8px;
     }
-    .text {
-      font-size: 13px;
-      line-height: 1.7;
-      color: #CBD5E1;
+
+    .text  { font-size: 13px; line-height: 1.7; color: #CBD5E1; }
+    .arrow { text-align: center; color: #334155; font-size: 12px; margin: 6px 0; letter-spacing: 1px; }
+
+    .carbon-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
     }
-    .arrow {
+
+    .carbon-stat {
+      background: #020817;
+      border: 1px solid #1E293B;
+      border-radius: 8px;
+      padding: 12px;
       text-align: center;
-      color: #334155;
-      font-size: 12px;
-      margin: 6px 0;
-      letter-spacing: 1px;
     }
+
+    .carbon-val { font-size: 18px; font-weight: 900; margin-bottom: 4px; }
+    .carbon-key { font-size: 10px; color: #475569; letter-spacing: 1px; text-transform: uppercase; }
+
     .stats {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 10px;
       margin-top: 14px;
     }
+
     .stat {
       background: #0F172A;
       border: 1px solid #1E293B;
       border-radius: 8px;
       padding: 14px 10px;
       text-align: center;
+      animation: fadeIn 0.4s ease;
     }
-    .stat-val {
-      font-size: 20px;
-      font-weight: 900;
-      margin-bottom: 5px;
-    }
-    .stat-key {
-      font-size: 10px;
-      color: #475569;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-    }
+
+    .stat-val { font-size: 20px; font-weight: 900; margin-bottom: 5px; }
+    .stat-key { font-size: 10px; color: #475569; letter-spacing: 1px; text-transform: uppercase; }
   </style>
 </head>
 <body>
   <h1>EcoPrompt Tester</h1>
-  <div class="sub">Classify · Route · Compress · Recommend · WebLLM Phi-3 Mini · 100% In-Browser</div>
+  <div class="sub">Real .js Files · Zero Logic In Test · WebLLM Phi-3 Mini · Carbon Aware</div>
+
+  <div id="loader">
+    <div class="loader-header">
+      <div class="loader-icon">🧠</div>
+      <div>
+        <div class="loader-title">Loading Phi-3-mini-4k</div>
+        <div class="loader-sub">First load downloads ~2GB — cached after that</div>
+      </div>
+    </div>
+    <div class="prog-row">
+      <div id="prog-phase">⏳ Starting up...</div>
+      <div id="prog-pct">0%</div>
+    </div>
+    <div class="prog-track">
+      <div id="prog-bar"></div>
+    </div>
+    <div id="prog-text">Initializing...</div>
+    <div id="prog-steps"></div>
+  </div>
+
+  <div id="model-ready">
+    ✅ &nbsp; Phi-3-mini loaded — WebGPU inference active
+  </div>
+
   <textarea
     id="input"
-    placeholder="Paste any prompt here — try factual, simple, moderate, and complex ones...
+    placeholder="Paste any prompt — messy, clean, short, long, misspelled, casual...
 
 Examples:
-- What is the capital of France?
-- Fix this Python bug
-- I was wondering if you could help me write a SQL query...
-- Design a scalable microservice architecture for an e-commerce platform"
-  ></textarea>
+- heyy baby can you help me with my math homework what is 2+2
+- can u plz hlp me undrstnd wat is machine learning
+- I was wondering if you could help me write a SQL query joining 3 tables...
+- Design a scalable microservice architecture for an e-commerce platform"></textarea>
+
   <button id="btn" disabled>⏳ Loading model...</button>
-  <div id="status">Initializing WebLLM — please wait...</div>
+  <div id="proc-status"></div>
   <div id="output"></div>
 </body>
 </html>
@@ -686,9 +576,25 @@ Examples:
 
 ---
 
-## What You'll See for Each Category
+## Summary of Every Fix Made
 ```
-FACTUAL prompt  → 🌱 Zero AI Energy  · PATH C · Web Search recommended
-SIMPLE prompt   → 💚 Low Energy      · PATH A · GPT-3.5-turbo recommended  
-MODERATE prompt → 💛 Medium Energy   · PATH A · GPT-4o-mini recommended
-COMPLEX prompt  → 🔴 High Complexity · PATH B · Claude Sonnet recommended -->
+compressor.js
+  ✅ Added isRogueOutput() — catches answers, explanations, meta-commentary
+  ✅ Added stripAnswerContamination() — cleans partial contamination
+  ✅ STRICT GATE — FACTUAL + SIMPLE never touch LLM
+  ✅ max_tokens: 60 — prevents rambling
+  ✅ [INPUT]/[OUTPUT] framing — stops model treating prompt as task to execute
+  ✅ runPipeline() takes label param — gates by classification
+  ✅ compressWithEngine() + compress() both accept label param
+  ✅ Rules compressor now strips "love/baby/babe" casual address words
+
+router.js
+  ✅ Added shouldCompress to all paths
+  ✅ Added modelSuggestion with full shape (badge, recommended, alternatives, etc)
+  ✅ SIMPLE and MODERATE now have separate paths with correct descriptions
+
+test_webllm.html
+  ✅ Passes classification.label to compressWithEngine()
+  ✅ Carbon card with all 6 metrics from carbon.js
+  ✅ PATH C shows web search suggestion instead of empty output
+  ✅ model-ready display:flex fixed -->

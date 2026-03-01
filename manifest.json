@@ -2,51 +2,36 @@
   "manifest_version": 3,
   "name": "EcoPrompt",
   "version": "1.0.0",
-  "description": "Compress your AI prompts. Save energy. Track your carbon footprint.",
+  "description": "Compress your AI prompts. Save energy.",
 
-  "permissions": [
-    "storage",
-    "offscreen",
-    "activeTab",
-    "identity",
-    "scripting"
-  ],
+  "permissions": ["storage", "offscreen", "activeTab", "identity", "scripting"],
 
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
     "https://claude.ai/*",
     "https://gemini.google.com/*",
-    "https://grok.com/*",
-    "https://github.com/copilot*"
+    "https://grok.com/*"
   ],
 
   "background": {
-    "service_worker": "src/background/worker.js",
-    "type": "module"
+    "service_worker": "dist/worker.bundle.js"
   },
 
-  "content_scripts": [
-    {
-      "matches": [
-        "https://chatgpt.com/*",
-        "https://chat.openai.com/*",
-        "https://claude.ai/*",
-        "https://gemini.google.com/*",
-        "https://grok.com/*"
-      ],
-      "js": ["src/content/inject.js"],
-      "run_at": "document_idle"
-    }
-  ],
+  "content_scripts": [{
+    "matches": [
+      "https://chatgpt.com/*",
+      "https://chat.openai.com/*",
+      "https://claude.ai/*",
+      "https://gemini.google.com/*",
+      "https://grok.com/*"
+    ],
+    "js": ["dist/inject.bundle.js"],
+    "run_at": "document_idle"
+  }],
 
   "action": {
-    "default_popup": "src/popup/popup.html",
-    "default_icon": {
-      "16":  "assets/icons/16.png",
-      "48":  "assets/icons/48.png",
-      "128": "assets/icons/128.png"
-    }
+    "default_popup": "src/popup/popup.html"
   },
 
   "content_security_policy": {

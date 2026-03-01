@@ -1,6 +1,4 @@
 // src/content/inject.js
-// Injected into ChatGPT, Claude, Gemini etc.
-// Responsibility: detect submit, grab prompt, trigger compression flow
 
 const SITE_CONFIGS = {
   'chatgpt.com': {
@@ -28,48 +26,53 @@ const SITE_CONFIGS = {
 const hostname = window.location.hostname.replace('www.', '');
 const config   = SITE_CONFIGS[hostname];
 
-if (!config) {
-  console.warn('[EcoPrompt] No config for', hostname);
-} else {
-  init();
-}
+if (config) init();
+
+// ── State ──────────────────────────────────────────────────────────────────────
+
+let listenerAttached  = false;
+let isProcessing      = false;  // true while overlay is showing
+let promptChanged     = true;   // false after overlay shown, resets on text change
+let lastPromptValue   = '';
+
+// ── Init ───────────────────────────────────────────────────────────────────────
 
 function init() {
-  // Use MutationObserver because these are React apps
-  // DOM elements get destroyed and recreated on navigation
   const observer = new MutationObserver(() => attachListeners());
   observer.observe(document.body, { childList: true, subtree: true });
-  attachListeners(); // also try immediately
+  attachListeners();
 }
 
-let listenerAttached = false;
+// ── Attach listeners ───────────────────────────────────────────────────────────
 
 function attachListeners() {
   const submitBtn = document.querySelector(config.submitSelector);
-  if (!submitBtn || listenerAttached) return;
+  const textarea  = document.querySelector(config.textareaSelector);
 
+  if (!submitBtn || !textarea || listenerAttached) return;
   listenerAttached = true;
 
-  submitBtn.addEventListener('click', async (e) => {
-    const textarea = document.querySelector(config.textareaSelector);
-    if (!textarea) return;
+  // Watch for text changes — rearm the interceptor when user edits
+  textarea.addEventListener('input', () => {
+    const currentVal = textarea.innerText || textarea.value;
+    if (currentVal !== lastPromptValue) {
+      promptChanged    = true;
+      lastPromptValue  = currentVal;
+    }
+  });
 
-    const prompt = textarea.innerText || textarea.value;
-    if (!prompt?.trim()) return;
+  // Click listener
+  submitBtn.addEventListener('click', handleSubmit, true);
 
-    // Stop the original submission
-    e.preventDefault();
-    e.stopPropagation();
+  // Enter key listener
+  textarea.addEventListener('keydown', (e) => {
+    // Enter without Shift = submit on all these sites
+    if (e.key === 'Enter' && !e.shiftKey) {
+      handleSubmit(e);
+    }
+  }, true);
 
-    // Send prompt to service worker to start the pipeline
-    chrome.runtime.sendMessage({
-      type:     'PROMPT_INTERCEPTED',
-      prompt:   prompt.trim(),
-      site:     hostname,
-    });
-  }, true); // capture phase so we get it before the site's own handler
-
-  // Reset flag when button is removed from DOM (React re-render)
+  // Reset listener if button removed from DOM (React re-render)
   const btnObserver = new MutationObserver(() => {
     if (!document.contains(submitBtn)) {
       listenerAttached = false;
@@ -79,24 +82,55 @@ function attachListeners() {
   btnObserver.observe(document.body, { childList: true, subtree: true });
 }
 
-// Listen for messages back from service worker
+// ── Core intercept logic ───────────────────────────────────────────────────────
+
+async function handleSubmit(e) {
+  // If we're already processing OR prompt hasn't changed since last overlay
+  // → let the event through naturally
+  if (isProcessing || !promptChanged) return;
+
+  const textarea = document.querySelector(config.textareaSelector);
+  if (!textarea) return;
+
+  const prompt = (textarea.innerText || textarea.value).trim();
+  if (!prompt) return;
+
+  // Stop submission
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+
+  // Lock until user makes a choice
+  isProcessing  = true;
+  promptChanged = false;
+  lastPromptValue = prompt;
+
+  // Send to service worker
+  chrome.runtime.sendMessage({
+    type:   'PROMPT_INTERCEPTED',
+    prompt: prompt,
+    site:   hostname,
+  });
+}
+
+// ── Message listener from service worker ──────────────────────────────────────
+
 chrome.runtime.onMessage.addListener((msg) => {
-
   if (msg.type === 'SHOW_COMPRESSED_OVERLAY') {
-    showOverlay(msg.original, msg.compressed, msg.stats);
+    showCompressionOverlay(msg.original, msg.compressed, msg.stats);
   }
-
+  if (msg.type === 'SHOW_SKIP_AI_OVERLAY') {
+    showSkipAIOverlay(msg.query, msg.results);
+  }
 });
 
-// ── Overlay UI ────────────────────────────────────────────────────────────────
-// This appears inline on the chatbot page
+// ── Compression Overlay ────────────────────────────────────────────────────────
 
-function showOverlay(original, compressed, stats) {
-  // Remove existing overlay if any
-  document.getElementById('ecoprompt-overlay')?.remove();
+function showCompressionOverlay(original, compressed, stats) {
+  removeOverlay();
 
   const overlay = document.createElement('div');
-  overlay.id = 'ecoprompt-overlay';
+  overlay.id    = 'ecoprompt-overlay';
   overlay.innerHTML = `
     <div id="ep-container">
       <div id="ep-header">
@@ -107,12 +141,12 @@ function showOverlay(original, compressed, stats) {
       <div id="ep-comparison">
         <div class="ep-col">
           <label>Original</label>
-          <div class="ep-text" id="ep-original">${escapeHtml(original)}</div>
+          <div class="ep-text">${escapeHtml(original)}</div>
           <span class="ep-token-count">${stats.originalTokens} tokens</span>
         </div>
         <div class="ep-col">
           <label>Compressed ✨</label>
-          <div class="ep-text" id="ep-compressed">${escapeHtml(compressed)}</div>
+          <div class="ep-text ep-compressed">${escapeHtml(compressed)}</div>
           <span class="ep-token-count">${stats.compressedTokens} tokens</span>
         </div>
       </div>
@@ -143,33 +177,113 @@ function showOverlay(original, compressed, stats) {
     </div>
   `;
 
-  // Inject styles
-  const style = document.createElement('style');
-  style.textContent = overlayCSS();
-  overlay.appendChild(style);
-
+  injectStyles(overlay);
   document.body.appendChild(overlay);
 
-  // Wire buttons
-  document.getElementById('ep-close').onclick   = () => overlay.remove();
-  document.getElementById('ep-reject').onclick  = () => {
-    overlay.remove();
-    // re-trigger original submission
-    chrome.runtime.sendMessage({ type: 'USER_REJECTED_COMPRESSION' });
-    submitOriginalPrompt(original);
+  document.getElementById('ep-close').onclick  = () => {
+    removeOverlay();
+    isProcessing = true;   // keep locked — user dismissed without choosing
+    promptChanged = false; // require re-edit to trigger again
   };
-  document.getElementById('ep-accept').onclick  = () => {
-    overlay.remove();
-    injectPromptAndSubmit(compressed);
+
+  document.getElementById('ep-reject').onclick = () => {
+    removeOverlay();
+    chrome.runtime.sendMessage({ type: 'USER_REJECTED_COMPRESSION' });
+    isProcessing = false;
+    submitNatively();
+  };
+
+  document.getElementById('ep-accept').onclick = () => {
+    removeOverlay();
     chrome.runtime.sendMessage({ type: 'USER_ACCEPTED_COMPRESSION', stats });
+    isProcessing = false;
+    injectAndSubmit(compressed);
   };
 }
 
-function injectPromptAndSubmit(text) {
+// ── Skip AI Overlay ────────────────────────────────────────────────────────────
+
+function showSkipAIOverlay(query, results) {
+  removeOverlay();
+
+  const resultsHTML = results.map((r, i) => `
+    <a class="ep-result" href="${r.url}" target="_blank" rel="noopener">
+      <div class="ep-result-num">${i + 1}</div>
+      <div class="ep-result-body">
+        <div class="ep-result-title">${escapeHtml(r.title)}</div>
+        <div class="ep-result-snippet">${escapeHtml(r.snippet)}</div>
+        <div class="ep-result-url">${escapeHtml(r.url)}</div>
+      </div>
+    </a>
+  `).join('');
+
+  const overlay = document.createElement('div');
+  overlay.id    = 'ecoprompt-overlay';
+  overlay.innerHTML = `
+    <div id="ep-container">
+      <div id="ep-header">
+        <span>🌿 EcoPrompt — Skip AI</span>
+        <button id="ep-close">✕</button>
+      </div>
+
+      <div id="ep-skip-label">
+        This looks like a factual query. Here are direct answers — no AI needed:
+      </div>
+
+      <div id="ep-query-shown">🔍 "${escapeHtml(query)}"</div>
+
+      <div id="ep-results">
+        ${results.length > 0 ? resultsHTML : '<p class="ep-no-results">No results found.</p>'}
+      </div>
+
+      <div id="ep-skip-savings">
+        <span>🌍 Skipping AI entirely saves ~0.05g CO₂ per query</span>
+      </div>
+
+      <div id="ep-actions">
+        <button id="ep-reject">Ask AI Anyway</button>
+      </div>
+    </div>
+  `;
+
+  injectStyles(overlay);
+  document.body.appendChild(overlay);
+
+  document.getElementById('ep-close').onclick  = () => {
+    removeOverlay();
+    isProcessing  = false;
+    promptChanged = false;
+  };
+
+  document.getElementById('ep-reject').onclick = () => {
+    // User wants to ask AI anyway — let it through
+    removeOverlay();
+    isProcessing = false;
+    submitNatively();
+  };
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function removeOverlay() {
+  document.getElementById('ecoprompt-overlay')?.remove();
+}
+
+function submitNatively() {
+  // Submit without triggering our interceptor again
+  isProcessing  = true;
+  promptChanged = false;
+  setTimeout(() => {
+    document.querySelector(config.submitSelector)?.click();
+    // Unlock after a beat — ready for next fresh message
+    setTimeout(() => { isProcessing = false; }, 500);
+  }, 100);
+}
+
+function injectAndSubmit(text) {
   const textarea = document.querySelector(config.textareaSelector);
   if (!textarea) return;
 
-  // Handle both contenteditable divs and textareas
   if (textarea.tagName === 'TEXTAREA') {
     textarea.value = text;
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
@@ -178,32 +292,34 @@ function injectPromptAndSubmit(text) {
     textarea.dispatchEvent(new InputEvent('input', { bubbles: true }));
   }
 
-  // Wait for React to process the input then click submit
+  // Don't re-intercept this submission
+  isProcessing  = true;
+  promptChanged = false;
+
   setTimeout(() => {
     document.querySelector(config.submitSelector)?.click();
-  }, 100);
+    setTimeout(() => { isProcessing = false; }, 500);
+  }, 150);
 }
 
-function submitOriginalPrompt(text) {
-  // User chose original — just resubmit as-is
-  setTimeout(() => {
-    document.querySelector(config.submitSelector)?.click();
-  }, 100);
-}
-
-function escapeHtml(str) {
+function escapeHtml(str = '') {
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
 
+function injectStyles(overlay) {
+  const style       = document.createElement('style');
+  style.textContent = overlayCSS();
+  overlay.appendChild(style);
+}
+
 function overlayCSS() {
   return `
     #ecoprompt-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.6);
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.65);
       z-index: 999999;
       display: flex;
       align-items: center;
@@ -215,8 +331,10 @@ function overlayCSS() {
       border: 1px solid #2d6a4f;
       border-radius: 12px;
       padding: 24px;
-      width: 720px;
-      max-width: 90vw;
+      width: 740px;
+      max-width: 92vw;
+      max-height: 88vh;
+      overflow-y: auto;
       color: #e0e0e0;
     }
     #ep-header {
@@ -224,16 +342,13 @@ function overlayCSS() {
       justify-content: space-between;
       align-items: center;
       margin-bottom: 16px;
-      font-size: 16px;
-      font-weight: 600;
+      font-size: 15px;
+      font-weight: 700;
       color: #52b788;
     }
     #ep-close {
-      background: none;
-      border: none;
-      color: #aaa;
-      cursor: pointer;
-      font-size: 16px;
+      background: none; border: none;
+      color: #aaa; cursor: pointer; font-size: 16px;
     }
     #ep-comparison {
       display: grid;
@@ -242,77 +357,78 @@ function overlayCSS() {
       margin-bottom: 16px;
     }
     .ep-col label {
-      display: block;
-      font-size: 11px;
-      text-transform: uppercase;
-      color: #888;
-      margin-bottom: 6px;
+      display: block; font-size: 11px;
+      text-transform: uppercase; color: #888; margin-bottom: 6px;
     }
     .ep-text {
-      background: #0d1117;
-      border-radius: 8px;
-      padding: 12px;
-      font-size: 13px;
-      line-height: 1.5;
-      min-height: 80px;
-      max-height: 160px;
-      overflow-y: auto;
-      white-space: pre-wrap;
+      background: #0d1117; border-radius: 8px;
+      padding: 12px; font-size: 13px; line-height: 1.5;
+      min-height: 80px; max-height: 150px;
+      overflow-y: auto; white-space: pre-wrap;
     }
-    #ep-compressed {
-      border: 1px solid #2d6a4f;
-    }
-    .ep-token-count {
-      font-size: 11px;
-      color: #666;
-      margin-top: 4px;
-      display: block;
-    }
+    .ep-compressed { border: 1px solid #2d6a4f; }
+    .ep-token-count { font-size: 11px; color: #555; margin-top: 4px; display: block; }
     #ep-savings {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 12px;
-      background: #0d1117;
-      border-radius: 8px;
-      padding: 16px;
-      margin-bottom: 16px;
-      text-align: center;
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: 10px; background: #0d1117;
+      border-radius: 8px; padding: 14px;
+      margin-bottom: 16px; text-align: center;
     }
-    .ep-metric-val {
-      display: block;
-      font-size: 20px;
-      font-weight: 700;
-      color: #52b788;
+    .ep-metric-val   { display: block; font-size: 18px; font-weight: 700; color: #52b788; }
+    .ep-metric-label { font-size: 10px; color: #666; }
+
+    /* Skip AI styles */
+    #ep-skip-label {
+      font-size: 13px; color: #aaa;
+      margin-bottom: 10px; line-height: 1.5;
     }
-    .ep-metric-label {
-      font-size: 11px;
-      color: #888;
+    #ep-query-shown {
+      background: #0d1117; border-radius: 8px;
+      padding: 10px 14px; font-size: 13px;
+      color: #52b788; margin-bottom: 14px;
+      font-style: italic;
     }
-    #ep-actions {
-      display: flex;
-      gap: 12px;
-      justify-content: flex-end;
+    #ep-results { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+    .ep-result {
+      display: flex; gap: 12px;
+      background: #0d1117; border-radius: 8px;
+      padding: 12px; text-decoration: none;
+      border: 1px solid #1e2d25;
+      transition: border-color 0.15s;
     }
+    .ep-result:hover { border-color: #52b788; }
+    .ep-result-num {
+      color: #52b788; font-weight: 700;
+      font-size: 16px; min-width: 20px;
+      padding-top: 2px;
+    }
+    .ep-result-title {
+      color: #e0e0e0; font-size: 13px;
+      font-weight: 600; margin-bottom: 4px;
+    }
+    .ep-result-snippet { color: #888; font-size: 12px; line-height: 1.4; margin-bottom: 4px; }
+    .ep-result-url     { color: #2d6a4f; font-size: 11px; }
+    #ep-skip-savings {
+      background: #1a2e1e; border-radius: 8px;
+      padding: 10px 14px; font-size: 12px;
+      color: #52b788; margin-bottom: 14px;
+    }
+    .ep-no-results { color: #666; font-size: 13px; padding: 16px 0; text-align: center; }
+
+    /* Actions */
+    #ep-actions { display: flex; gap: 12px; justify-content: flex-end; }
     #ep-reject {
-      background: transparent;
-      border: 1px solid #444;
-      color: #aaa;
-      padding: 10px 20px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 14px;
+      background: transparent; border: 1px solid #444;
+      color: #aaa; padding: 10px 20px;
+      border-radius: 8px; cursor: pointer; font-size: 14px;
     }
     #ep-accept {
-      background: #2d6a4f;
-      border: none;
-      color: white;
-      padding: 10px 24px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 600;
+      background: #2d6a4f; border: none;
+      color: white; padding: 10px 24px;
+      border-radius: 8px; cursor: pointer;
+      font-size: 14px; font-weight: 600;
     }
-    #ep-accept:hover { background: #52b788; }
+    #ep-accept:hover { background: #52b788; color: #0d1117; }
     #ep-reject:hover { background: #1a1a1a; }
   `;
 }

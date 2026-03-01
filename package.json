@@ -1,0 +1,31 @@
+{
+  "name": "ecoprompt",
+  "version": "1.0.0",
+  "description": "",
+  "main": "offscreen.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "webpack",
+    "watch": "webpack --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuvarraj-sriramkumar/EcoPrompt.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/yuvarraj-sriramkumar/EcoPrompt/issues"
+  },
+  "homepage": "https://github.com/yuvarraj-sriramkumar/EcoPrompt#readme",
+  "devDependencies": {
+    "copy-webpack-plugin": "^13.0.1",
+    "webpack": "^5.105.3",
+    "webpack-cli": "^6.0.1"
+  },
+  "dependencies": {
+    "@mlc-ai/web-llm": "^0.2.81"
+  }
+}

@@ -132,16 +132,3 @@ function setupSettings() {
     chrome.storage.sync.set({ autoAccept: autoAccept.checked });
   });
 }
-```
-
----
-
-## Step 7 — Load Into Chrome and Test
-```
-1. chrome://extensions
-2. Developer Mode ON
-3. Load Unpacked → select your ecoprompt/ folder
-4. Go to chatgpt.com
-5. Type a prompt, click submit
-6. You should see the overlay appear
-7. Click the extension icon → popup opens with stats
